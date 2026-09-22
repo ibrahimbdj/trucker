@@ -7,18 +7,24 @@
 #include <string.h>
 #include <sys/wait.h>
 
+struct chargs {
+    pid_t ppid;
+};
+
 int sethname(){
-    const char hostname[64] = "conteneur";
+    const char hostname[64] = "conteneur1";
     return sethostname(hostname, strlen(hostname));
 }
 
-int fchild(void* chargs){
-    
+int fchild(void* charg){
+    printf("debut enfant\n");
+
     if(sethname() < 0){
-        printf("sethostname failed");
+        printf("sethostname failed\n");
         exit(EXIT_FAILURE);
     }
-    sleep(10000);
+    sleep(1);
+    printf("fin enfant\n");
     return 0;
 }
 
@@ -28,22 +34,36 @@ int deliver(char* envPath, char* exePath){
 
     size_t stacksize = (1024*1024);
     char* stack = malloc(1024*1024);
+
+    struct chargs* charg = malloc(sizeof(struct chargs));
+    charg->ppid = 10;
+
     if(stack == NULL){
         printf("malloc child stack failed\n");
         exit(EXIT_FAILURE);
     }
 
-    char* chargs[] = {"child", "arg1"};
+    if(unshare(CLONE_NEWUSER | CLONE_NEWTIME) < 0){
+        printf("unshare timens failed\n");
+        exit(EXIT_FAILURE);
+    }
 
-    int pid = clone(&fchild, stack+stacksize, CLONE_NEWUSER | CLONE_NEWUTS | SIGCHLD, chargs);
+    
+    pid_t pid = clone(&fchild, stack+stacksize,
+        CLONE_NEWUTS |
+        CLONE_NEWIPC |
+        CLONE_NEWCGROUP |
+        CLONE_NEWNS |
+        CLONE_NEWPID |
+        CLONE_NEWNET |
+        SIGCHLD, charg);
 
     if(pid < 0){
         printf("clone failed\n");
         exit(EXIT_FAILURE);
     };
-    printf("%d\n", pid);
+    printf("pid enfant: %d\n", pid);
     waitpid(pid, &status, 0);
-
     printf("fin parent\n");
     return 0;
 }
