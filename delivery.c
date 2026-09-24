@@ -9,21 +9,39 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <fcntl.h>
+#include "options.h"
 
 struct chargs {
     pid_t ppid;
 };
 
-int sethname(){
-    const char hostname[64] = "conteneur1";
-    return sethostname(hostname, strlen(hostname));
+char* hname_gen(pid_t pid){
+    unsigned int ihname = 0;
+    char* chname = malloc(37*sizeof(char));
+
+    srand(time(NULL) + pid);
+
+    for(int i = 3; i >= 0; i--){
+        unsigned int hname_section_i = rand() % 255;
+        ihname = ihname | (hname_section_i << (i*8));
+    }
+    
+    sprintf(chname, "ctr-%08x", ihname);
+
+    return chname;
 }
 
-int fchild(void* charg){
-    printf("debut enfant\n");
+int sethname(pid_t pid){
+    char* hname = hname_gen(pid);
+    return sethostname(hname, strlen(hname));
+}
 
-    if(sethname() < 0){
+int fchild(void* arg){
+    printf("debut enfant\n");
+    struct chargs* charg = arg;
+    if(sethname(charg->ppid) < 0){
         printf("sethostname failed\n");
         exit(EXIT_FAILURE);
     }
@@ -66,7 +84,7 @@ int fn_id_map(unsigned int id, char* type){
     return 0;
 }
 
-int deliver(char* envPath, char* exePath){
+int deliver(char* envPath, char* exePath, struct options** opts){
     printf("debut parent\n");
 
     uid_t uid = getuid();
@@ -99,6 +117,7 @@ int deliver(char* envPath, char* exePath){
     fn_id_map(uid, "uid");
     fn_id_map(gid, "gid");
     
+    //uts ns config ok
     pid_t chpid = clone(&fchild, stack+stacksize,
         CLONE_NEWUTS |
         CLONE_NEWIPC |
