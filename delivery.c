@@ -9,8 +9,11 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include "options.h"
 
 struct chargs {
@@ -38,13 +41,58 @@ int sethname(pid_t pid){
     return sethostname(hname, strlen(hname));
 }
 
+int config_mount_ns(/*path vers la racine du conteneur à mettre*/){
+    const char* container_root = "/home/ibrahimbdj/trucker/conteneur-root";
+
+    if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0){
+        printf("Mount ns propagation change failed\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    if(mount(container_root, container_root, NULL, MS_BIND, NULL)){
+        printf("Binding of container root to container root failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    chdir(container_root);
+    syscall(SYS_pivot_root, container_root, container_root);
+    umount2(".", MNT_DETACH);
+
+    return 0;
+}
+
 int fchild(void* arg){
     printf("debut enfant\n");
     struct chargs* charg = arg;
+
     if(sethname(charg->ppid) < 0){
         printf("sethostname failed\n");
         exit(EXIT_FAILURE);
     }
+
+    char* argv[2];
+    argv[0] = "sh";
+    argv[1] = NULL;
+
+    config_mount_ns();
+
+    char* cwd = malloc(32*sizeof(char));
+    getcwd(cwd, 64*sizeof(char));
+    printf("cwd: %s\n", cwd);
+
+    // DIR *d = opendir("/");
+    // if(!d) return perror("opendir"), -1;
+    // struct dirent *e;
+    // while ((e = readdir(d)) != NULL) printf("%s\n", e->d_name);
+    // closedir(d);
+
+    int exret = execve("/bin/sh", argv, NULL);
+
+    if( exret < 0){
+        printf("execve failed\n");
+        exit(EXIT_FAILURE);
+    }
+
     sleep(1000);
     printf("fin enfant\n");
     return 0;
@@ -84,15 +132,26 @@ int fn_id_map(unsigned int id, char* type){
     return 0;
 }
 
+int config_user_ns(uid_t uid, gid_t gid){
+    FILE* setgroups = fopen("/proc/self/setgroups", "w");
+    fwrite("deny", 1, strlen("deny"), setgroups);
+    fclose(setgroups);
+
+    fn_id_map(uid, "uid");
+    fn_id_map(gid, "gid");
+
+    return 0;
+}
+
 int deliver(char* envPath, char* exePath, struct options** opts){
     printf("debut parent\n");
 
-    uid_t uid = getuid();
-    gid_t gid = getgid();
-    printf("gid: %d\n", gid);
     int status;
     exePath = "/bin/bash";
 
+    uid_t uid = getuid();
+    gid_t gid = getgid();
+    
     size_t stacksize = (1024*1024);
     char* stack = malloc(1024*1024);
 
@@ -110,14 +169,9 @@ int deliver(char* envPath, char* exePath, struct options** opts){
         exit(EXIT_FAILURE);
     }
     
-    FILE* setgroups = fopen("/proc/self/setgroups", "w");
-    fwrite("deny", 1, strlen("deny"), setgroups);
-    fclose(setgroups);
-
-    fn_id_map(uid, "uid");
-    fn_id_map(gid, "gid");
+    config_user_ns(uid, gid);
     
-    //uts ns config ok
+    //uts, cgroup ns config ok
     pid_t chpid = clone(&fchild, stack+stacksize,
         CLONE_NEWUTS |
         CLONE_NEWIPC |
