@@ -10,7 +10,7 @@ int main(int argc, char* argv[]){
         printf("Use: trucker <command> <argument> <options>\n");
         exit(EXIT_FAILURE);
     }
-    
+
     const char* optstring = "t:n:";
 
     int opt_cur = getopt(argc, argv, optstring);
@@ -20,7 +20,7 @@ int main(int argc, char* argv[]){
     while(opt_cur != -1){
         if(opt_cur == *"?" || opt_cur == *":") exit(EXIT_FAILURE);
 
-        struct options* option = malloc(sizeof(struct options*));
+        struct options* option = malloc(sizeof(struct options));
         option->opt = opt_cur;
         option->opt_arg = optarg;
         *(opts+i) = option;

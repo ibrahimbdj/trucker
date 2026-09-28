@@ -78,17 +78,74 @@ int sethname(pid_t pid){
     return 0;
 }
 
+int symlink_wrapper(const char* target, const char* linkpath){
+    if(symlink(target , linkpath) < 0){
+        fprintf(stderr, "symlink %s -> %s failed: %s\n", target, linkpath, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+int mount_bind(const char* source, const char* target, const char* root_target, char* type){
+    char* real_target = malloc((strlen(target) + strlen(root_target) + 1) * sizeof(char));
+    strcpy(real_target, root_target);
+    strcat(real_target, target);
+
+    if(strcmp(type, "dir") == 0){
+        DIR* dir = opendir(real_target);
+        if(dir) closedir(dir);
+        else {
+            if(mkdir(real_target, 0755) < 0){
+                fprintf(stderr, "mkdir %s failed: %s", real_target, strerror(errno));
+                return -1;
+            }
+        }
+    }else if(strcmp(type, "file") == 0){
+        FILE* f = fopen(real_target, "w");
+        if(f) fclose(f);
+        else {
+            fprintf(stderr, "file %s creation failed: %s\n", real_target, strerror(errno));
+            return -1;
+        }
+    } else {
+        fprintf(stderr, "mount_bind: wrong type\n");
+        return -1;
+    }
+
+    if(mount(source, real_target, NULL, MS_BIND, NULL) < 0){
+        fprintf(stderr, "Mount %s on %s failed: %s\n", source, real_target, strerror(errno));
+        free(real_target);
+        return -1;
+    }
+    free(real_target);
+    return 0;
+}
+
 int mount_newfs(const char* source, 
-                    const char* target, const char* filesystemtype, 
+                    const char* target,
+                    const char* filesystemtype,
+                    const char* root_target,
                     unsigned long mountflags,
-                    const void* data){
+                    const void* data, mode_t mode){
 
-                        if(mount(source, target, filesystemtype, mountflags, data) < 0){
-                            fprintf(stderr, "mount %s failed: %s\n", target, strerror(errno));
-                            return -1;
-                        }
+    char* real_target = malloc((strlen(target) + strlen(root_target) + 1) * sizeof(char));
+    strcpy(real_target, root_target);
+    strcat(real_target, target);
 
-                        return 0;
+    DIR* dir = opendir(real_target);
+    if(dir) closedir(dir);
+    else{
+        if (mkdir(real_target, mode) < 0){
+            fprintf(stderr, "mkdir %s failed: %s\n", real_target, strerror(errno));
+            return -1;
+        }
+    }
+    if(mount(source, real_target, filesystemtype, mountflags, data) < 0){
+        fprintf(stderr, "mount %s failed: %s\n", real_target, strerror(errno));
+        return -1;
+    }
+    free(real_target);
+    return 0;
 }
 
 int config_uts_ns(pid_t ppid){
@@ -102,11 +159,21 @@ int config_mount_ns(/*path vers la racine du conteneur à mettre*/){
         fprintf(stderr, "Mount ns propagation change failed: %s\n", strerror(errno));
         return -1;
     }
+
+    if(mount_bind(container_root, container_root, "", "dir") < 0) return -1;
+
+    if(mount_newfs("tmp", "/tmp", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=1777", 1777) < 0) return -1;
+    if(mount_newfs("run", "/run", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=755", 0755) < 0) return -1;
+    if(mount_newfs("dev", "/dev", "tmpfs", container_root, MS_NOSUID | MS_STRICTATIME, "mode=755", 0755) < 0) return -1;
+    if(mount_newfs("sys", "/sys", "sysfs", container_root, MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555) < 0) return -1;
+    if(mount_newfs("devpts", "/dev/pts", "devpts", container_root, MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755) < 0) return -1;
     
-    if(mount(container_root, container_root, NULL, MS_BIND, NULL)){
-        fprintf(stderr, "Mount container root on container root failed: %s\n", strerror(errno));
-        return -1;
-    }
+    if(mount_bind("/dev/null", "/dev/null", container_root, "file") < 0) return -1;
+    if(mount_bind("/dev/zero", "/dev/zero", container_root, "file") < 0) return -1;
+    if(mount_bind("/dev/full", "/dev/full", container_root, "file") < 0) return -1;
+    if(mount_bind("/dev/random", "/dev/random", container_root, "file") < 0) return -1;
+    if(mount_bind("/dev/urandom", "/dev/urandom", container_root, "file") < 0) return -1;
+    if(mount_bind("/dev/tty", "/dev/tty", container_root, "file") < 0) return -1;
 
     if(chdir(container_root) < 0){
         fprintf(stderr, "chdir to new root failed: %s\n", strerror(errno));
@@ -123,23 +190,29 @@ int config_mount_ns(/*path vers la racine du conteneur à mettre*/){
         return -1;
     }
 
-    if(mount_newfs("tmp", "/tmp", "tmpfs", MS_NODEV | MS_NOSUID, "mode=1777") < 0) return -1;
-    if(mount_newfs("run", "/run", "tmpfs", MS_NODEV | MS_NOSUID, "mode=755") < 0) return -1;
-    if(mount_newfs("dev", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755") < 0) return -1;
-    if(mount_newfs("sys", "/sys", "sysfs", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL) < 0) return -1;
+    if(symlink_wrapper("/proc/self/fd", "/dev/fd") < 0) return -1;
+    if(symlink_wrapper("/proc/self/0", "/dev/stdin") < 0) return -1;
+    if(symlink_wrapper("/proc/self/1", "/dev/stdout") < 0) return -1;
+    if(symlink_wrapper("/proc/self/2", "/dev/stderr") < 0) return -1;
+
+
 
     return 0;
 }
 
 int config_pid_ns(){
-    return mount_newfs("proc", "/proc", "proc", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL);
+    return mount_newfs("proc", "/proc", "proc", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 0555);
 }
 
 int config_ipc_ns(){
-    if(mount_newfs("shm", "/dev/shm", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777") < 0) return -1;
-    if(mount_newfs("mqueue", "/dev/mqueue", "mqueue", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL) < 0) return -1;
+    if(mount_newfs("shm", "/dev/shm", "tmpfs", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777", 1777) < 0) return -1;
+    if(mount_newfs("mqueue", "/dev/mqueue", "mqueue", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 1777) < 0) return -1;
 
     return 0;
+}
+
+int config_cgroup_ns(){
+    return mount_newfs("cgroup", "/sys/fs/cgroup", "cgroup2", "", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY,  NULL, 1777);
 }
 
 int config_user_ns(uid_t uid, gid_t gid){
@@ -154,14 +227,14 @@ int config_user_ns(uid_t uid, gid_t gid){
 }
 
 int fchild(void* arg){
-    printf("debut enfant\n");
     struct chargs* charg = arg;
 
     if(config_user_ns(charg->rluid, charg->rlgid) < 0) return -1;
     if(config_uts_ns(charg->ppid) < 0) return -1;  
     if(config_mount_ns() < 0) return -1; 
     if(config_pid_ns() < 0) return -1; 
-    //if(config_ipc_ns() < 0) return -1;
+    if(config_ipc_ns() < 0) return -1;
+    if(config_cgroup_ns() < 0) return -1;
 
     char* argv[2];
     argv[0] = "sh";
@@ -172,7 +245,6 @@ int fchild(void* arg){
         return -1;
     }
 
-    printf("fin enfant\n");
     return 0;
 }
 
@@ -186,8 +258,6 @@ void truckerpid(pid_t chpid, pid_t ppid){
 }
 
 int deliver(char* envPath, char* exePath, struct options** opts){
-    printf("debut parent\n");
-
     int status;
     exePath = "/bin/bash";
     
@@ -206,11 +276,11 @@ int deliver(char* envPath, char* exePath, struct options** opts){
 
     //user and time ns config ok
     if(unshare(CLONE_NEWUSER | CLONE_NEWTIME) < 0){
-        fprintf(stderr, "unshare timens failed: %s\n", strerror(errno));
+        fprintf(stderr, "unshare time ns failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     
-    //uts, cgroup, pid, ipc ns config ok
+    //uts, cgroup, pid, ipc, mount ns config ok
     pid_t chpid = clone(&fchild, stack+stacksize,
         CLONE_NEWUTS |
         CLONE_NEWIPC |
@@ -226,13 +296,12 @@ int deliver(char* envPath, char* exePath, struct options** opts){
     };
 
     truckerpid(chpid, charg->ppid);
-    printf("pid enfant: %d\n", chpid);
+    printf("child pid: %d\n", chpid);
 
     waitpid(chpid, &status, 0);
     if(status < 0){
         printf("container failed\n");
     } else printf("container succeeded\n");
     //nettoyage
-    printf("fin parent\n");
     return 0;
 }
