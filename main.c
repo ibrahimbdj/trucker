@@ -11,6 +11,10 @@ int main(int argc, char* argv[]){
         exit(EXIT_FAILURE);
     }
 
+    char* container_argv[2];
+    container_argv[0] = "sh";
+    container_argv[1] = NULL;
+
     const char* optstring = "t:n:";
 
     int opt_cur = getopt(argc, argv, optstring);
@@ -29,7 +33,7 @@ int main(int argc, char* argv[]){
         i++;
     }
 
-    if(strcmp(argv[optind], "deliver") == 0) deliver(argv[optind+1], argv[optind+2], opts);
+    if(strcmp(argv[optind], "deliver") == 0) deliver(argv[optind+1], argv[optind+2], container_argv, opts);
     else {
         printf("command unknown: \"trucker help\" to get commands list\n");
         exit(EXIT_FAILURE);

@@ -3,6 +3,6 @@
 
 #include "options.h"
 
-int deliver(char* envPath, char* exePath, struct options** opts);
+int deliver(const char* container_root, const char* container_prog, char* container_argv[], struct options** opts);
 
 #endif

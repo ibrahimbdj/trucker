@@ -21,6 +21,39 @@ struct chargs {
     pid_t ppid;
     uid_t rluid;
     gid_t rlgid;
+    const char* root;
+    const char* prog;
+    char** argv;
+};
+
+struct newfs_args {
+    const char* source; 
+    const char* target;
+    const char* filesystemtype;
+    unsigned long mountflags;
+    const void* data;
+    mode_t mode;
+};
+
+static struct newfs_args default_mount_newfs[] = {
+    {"tmp", "/tmp", "tmpfs", MS_NODEV | MS_NOSUID, "mode=1777", 01777},
+    {"run", "/run", "tmpfs", MS_NODEV | MS_NOSUID, "mode=755", 0755},
+    {"dev", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755", 0755},
+    {"sys", "/sys", "sysfs", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555},
+    {"devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755}
+};
+
+static struct newfs_args default_pid_newfs[] = {
+    {"proc", "/proc", "proc", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 0555}
+};
+
+static struct newfs_args default_ipc_newfs[] = {
+    {"shm", "/dev/shm", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777", 01777},
+    {"mqueue", "/dev/mqueue", "mqueue", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 01777}
+};
+
+static struct newfs_args default_cgroup_newfs[] = {
+    {"cgroup", "/sys/fs/cgroup", "cgroup2", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY,  NULL, 1777}
 };
 
 int fn_id_map(unsigned int id, char* type){
@@ -121,26 +154,21 @@ int mount_bind(const char* source, const char* target, const char* root_target, 
     return 0;
 }
 
-int mount_newfs(const char* source, 
-                    const char* target,
-                    const char* filesystemtype,
-                    const char* root_target,
-                    unsigned long mountflags,
-                    const void* data, mode_t mode){
+int mount_newfs(struct newfs_args* args, const char* root_target){
 
-    char* real_target = malloc((strlen(target) + strlen(root_target) + 1) * sizeof(char));
+    char* real_target = malloc((strlen(args->target) + strlen(root_target) + 1) * sizeof(char));
     strcpy(real_target, root_target);
-    strcat(real_target, target);
+    strcat(real_target, args->target);
 
     DIR* dir = opendir(real_target);
     if(dir) closedir(dir);
     else{
-        if (mkdir(real_target, mode) < 0){
+        if (mkdir(real_target, args->mode) < 0){
             fprintf(stderr, "mkdir %s failed: %s\n", real_target, strerror(errno));
             return -1;
         }
     }
-    if(mount(source, real_target, filesystemtype, mountflags, data) < 0){
+    if(mount(args->source, real_target, args->filesystemtype, args->mountflags, args->data) < 0){
         fprintf(stderr, "mount %s failed: %s\n", real_target, strerror(errno));
         return -1;
     }
@@ -152,22 +180,18 @@ int config_uts_ns(pid_t ppid){
     return sethname(ppid);
 }
 
-int config_mount_ns(/*path vers la racine du conteneur à mettre*/){
-    const char* container_root = "/home/ibrahimbdj/trucker/conteneur-root";
+int config_mount_ns(const char* container_root){
 
-    if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0){
-        fprintf(stderr, "Mount ns propagation change failed: %s\n", strerror(errno));
-        return -1;
+    // if(mount_newfs("tmp", "/tmp", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=1777", 01777) < 0) return -1;
+    // if(mount_newfs("run", "/run", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=755", 0755) < 0) return -1;
+    // if(mount_newfs("dev", "/dev", "tmpfs", container_root, MS_NOSUID | MS_STRICTATIME, "mode=755", 0755) < 0) return -1;
+    // if(mount_newfs("sys", "/sys", "sysfs", container_root, MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555) < 0) return -1;
+    // if(mount_newfs("devpts", "/dev/pts", "devpts", container_root, MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755) < 0) return -1;
+    
+    for(int i = 0; i < (int)(sizeof(default_mount_newfs)/sizeof(default_mount_newfs[0])); i++){
+        if(mount_newfs(&(default_mount_newfs[i]), container_root) < 0) return -1;
     }
 
-    if(mount_bind(container_root, container_root, "", "dir") < 0) return -1;
-
-    if(mount_newfs("tmp", "/tmp", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=1777", 1777) < 0) return -1;
-    if(mount_newfs("run", "/run", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=755", 0755) < 0) return -1;
-    if(mount_newfs("dev", "/dev", "tmpfs", container_root, MS_NOSUID | MS_STRICTATIME, "mode=755", 0755) < 0) return -1;
-    if(mount_newfs("sys", "/sys", "sysfs", container_root, MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555) < 0) return -1;
-    if(mount_newfs("devpts", "/dev/pts", "devpts", container_root, MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755) < 0) return -1;
-    
     if(mount_bind("/dev/null", "/dev/null", container_root, "file") < 0) return -1;
     if(mount_bind("/dev/zero", "/dev/zero", container_root, "file") < 0) return -1;
     if(mount_bind("/dev/full", "/dev/full", container_root, "file") < 0) return -1;
@@ -191,28 +215,32 @@ int config_mount_ns(/*path vers la racine du conteneur à mettre*/){
     }
 
     if(symlink_wrapper("/proc/self/fd", "/dev/fd") < 0) return -1;
-    if(symlink_wrapper("/proc/self/0", "/dev/stdin") < 0) return -1;
-    if(symlink_wrapper("/proc/self/1", "/dev/stdout") < 0) return -1;
-    if(symlink_wrapper("/proc/self/2", "/dev/stderr") < 0) return -1;
-
-
+    if(symlink_wrapper("/proc/self/fd/0", "/dev/stdin") < 0) return -1;
+    if(symlink_wrapper("/proc/self/fd/1", "/dev/stdout") < 0) return -1;
+    if(symlink_wrapper("/proc/self/fd/2", "/dev/stderr") < 0) return -1;
 
     return 0;
 }
 
-int config_pid_ns(){
-    return mount_newfs("proc", "/proc", "proc", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 0555);
+int config_pid_ns(const char* container_root){
+    for(int i = 0; i < (int)(sizeof(default_pid_newfs)/sizeof(default_pid_newfs[0])); i++){
+        if(mount_newfs(&(default_pid_newfs[i]), container_root) < 0) return -1;
+    }
+    return 0;
 }
 
 int config_ipc_ns(){
-    if(mount_newfs("shm", "/dev/shm", "tmpfs", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777", 1777) < 0) return -1;
-    if(mount_newfs("mqueue", "/dev/mqueue", "mqueue", "", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 1777) < 0) return -1;
-
+    for(int i = 0; i < (int)(sizeof(default_ipc_newfs)/sizeof(default_ipc_newfs[0])); i++){
+        if(mount_newfs(&(default_ipc_newfs[i]), "") < 0) return -1;
+    }
     return 0;
 }
 
 int config_cgroup_ns(){
-    return mount_newfs("cgroup", "/sys/fs/cgroup", "cgroup2", "", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY,  NULL, 1777);
+    for(int i = 0; i < (int)(sizeof(default_cgroup_newfs)/sizeof(default_cgroup_newfs[0])); i++){
+        if(mount_newfs(&(default_cgroup_newfs[i]), "") < 0) return -1;
+    }
+    return 0;
 }
 
 int config_user_ns(uid_t uid, gid_t gid){
@@ -226,21 +254,28 @@ int config_user_ns(uid_t uid, gid_t gid){
     return 0;
 }
 
+int init_root(const char* container_root){
+    if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0){
+        fprintf(stderr, "Mount ns propagation change failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return mount_bind(container_root, container_root, "", "dir");
+}
+
 int fchild(void* arg){
     struct chargs* charg = arg;
 
+    if(init_root(charg->root) < 0) return -1;
     if(config_user_ns(charg->rluid, charg->rlgid) < 0) return -1;
     if(config_uts_ns(charg->ppid) < 0) return -1;  
-    if(config_mount_ns() < 0) return -1; 
-    if(config_pid_ns() < 0) return -1; 
+    if(config_pid_ns(charg->root) < 0) return -1; 
+    if(config_mount_ns(charg->root) < 0) return -1; 
     if(config_ipc_ns() < 0) return -1;
     if(config_cgroup_ns() < 0) return -1;
+    
 
-    char* argv[2];
-    argv[0] = "sh";
-    argv[1] = NULL;
-
-    if(execve("/bin/sh", argv, NULL) < 0){
+    if(execve(charg->prog, charg->argv, NULL) < 0){
         fprintf(stderr, "execve failed: %s\n", strerror(errno));
         return -1;
     }
@@ -257,9 +292,10 @@ void truckerpid(pid_t chpid, pid_t ppid){
     free(pidc);
 }
 
-int deliver(char* envPath, char* exePath, struct options** opts){
+int deliver(const char* container_root, const char* container_prog, char* container_argv[], struct options** opts){
     int status;
-    exePath = "/bin/bash";
+    container_prog = "/bin/sh";
+    container_root = "/home/ibrahimbdj/trucker/conteneur-root";
     
     size_t stacksize = (1024*1024);
     char* stack = malloc(1024*1024);
@@ -273,6 +309,9 @@ int deliver(char* envPath, char* exePath, struct options** opts){
     charg->ppid = getpid();
     charg->rluid = getuid();
     charg->rlgid = getgid();
+    charg->root = container_root;
+    charg->prog = container_prog;
+    charg->argv = container_argv;
 
     //user and time ns config ok
     if(unshare(CLONE_NEWUSER | CLONE_NEWTIME) < 0){
