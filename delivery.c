@@ -26,34 +26,49 @@ struct chargs {
     char** argv;
 };
 
-struct newfs_args {
+struct mount_args {
     const char* source; 
     const char* target;
     const char* filesystemtype;
     unsigned long mountflags;
     const void* data;
-    mode_t mode;
 };
 
-static struct newfs_args default_mount_newfs[] = {
-    {"tmp", "/tmp", "tmpfs", MS_NODEV | MS_NOSUID, "mode=1777", 01777},
-    {"run", "/run", "tmpfs", MS_NODEV | MS_NOSUID, "mode=755", 0755},
-    {"dev", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755", 0755},
-    {"sys", "/sys", "sysfs", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555},
-    {"devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755}
+static struct mount_args default_mount_newfs[] = {
+    {"tmp", "/tmp", "tmpfs", MS_NODEV | MS_NOSUID, "mode=1777"},
+    {"run", "/run", "tmpfs", MS_NODEV | MS_NOSUID, "mode=755"},
+    {"dev", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755"},
+    {"sys", "/sys", "sysfs", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL},
+    {"devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666"}
 };
 
-static struct newfs_args default_pid_newfs[] = {
-    {"proc", "/proc", "proc", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 0555}
+static struct mount_args default_pid_newfs[] = {
+    {"proc", "/proc", "proc", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL}
 };
 
-static struct newfs_args default_ipc_newfs[] = {
-    {"shm", "/dev/shm", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777", 01777},
-    {"mqueue", "/dev/mqueue", "mqueue", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL, 01777}
+static struct mount_args default_ipc_newfs[] = {
+    {"shm", "/dev/shm", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC,  "mode=1777"},
+    {"mqueue", "/dev/mqueue", "mqueue", MS_NODEV | MS_NOSUID | MS_NOEXEC,  NULL}
 };
 
-static struct newfs_args default_cgroup_newfs[] = {
-    {"cgroup", "/sys/fs/cgroup", "cgroup2", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY,  NULL, 1777}
+static struct mount_args default_cgroup_newfs[] = {
+    {"cgroup", "/sys/fs/cgroup", "cgroup2", MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY,  NULL}
+};
+
+static struct mount_args default_mount_bind[] = {
+    {"/dev/null", "/dev/null", NULL, MS_BIND, NULL},
+    {"/dev/zero", "/dev/zero", NULL, MS_BIND, NULL},
+    {"/dev/full", "/dev/full", NULL, MS_BIND, NULL},
+    {"/dev/random", "/dev/random", NULL, MS_BIND, NULL},
+    {"/dev/urandom", "/dev/urandom", NULL, MS_BIND, NULL},
+    {"/dev/tty", "/dev/tty", NULL, MS_BIND, NULL}
+};
+
+static char* default_symlink[][2] = {
+    {"/proc/self/fd", "/dev/fd"},
+    {"/proc/self/fd/0", "/dev/stdin"},
+    {"/proc/self/fd/1", "/dev/stdout"},
+    {"/proc/self/fd/2", "/dev/stderr"}
 };
 
 int fn_id_map(unsigned int id, char* type){
@@ -119,34 +134,20 @@ int symlink_wrapper(const char* target, const char* linkpath){
     return 0;
 }
 
-int mount_bind(const char* source, const char* target, const char* root_target, char* type){
-    char* real_target = malloc((strlen(target) + strlen(root_target) + 1) * sizeof(char));
+int mount_bind_file(struct mount_args* args, const char* root_target){
+    char* real_target = malloc((strlen(args->target) + strlen(root_target) + 1) * sizeof(char));
     strcpy(real_target, root_target);
-    strcat(real_target, target);
+    strcat(real_target, args->target);
 
-    if(strcmp(type, "dir") == 0){
-        DIR* dir = opendir(real_target);
-        if(dir) closedir(dir);
-        else {
-            if(mkdir(real_target, 0755) < 0){
-                fprintf(stderr, "mkdir %s failed: %s", real_target, strerror(errno));
-                return -1;
-            }
-        }
-    }else if(strcmp(type, "file") == 0){
-        FILE* f = fopen(real_target, "w");
-        if(f) fclose(f);
-        else {
-            fprintf(stderr, "file %s creation failed: %s\n", real_target, strerror(errno));
-            return -1;
-        }
-    } else {
-        fprintf(stderr, "mount_bind: wrong type\n");
+    FILE* f = fopen(real_target, "w");
+    if(f) fclose(f);
+    else {
+        fprintf(stderr, "file %s creation failed: %s\n", real_target, strerror(errno));
         return -1;
     }
 
-    if(mount(source, real_target, NULL, MS_BIND, NULL) < 0){
-        fprintf(stderr, "Mount %s on %s failed: %s\n", source, real_target, strerror(errno));
+    if(mount(args->source, real_target, NULL, MS_BIND, NULL) < 0){
+        fprintf(stderr, "Mount %s on %s failed: %s\n", args->source, real_target, strerror(errno));
         free(real_target);
         return -1;
     }
@@ -154,7 +155,30 @@ int mount_bind(const char* source, const char* target, const char* root_target, 
     return 0;
 }
 
-int mount_newfs(struct newfs_args* args, const char* root_target){
+int mount_bind_dir(struct mount_args* args, const char* root_target){
+    char* real_target = malloc((strlen(args->target) + strlen(root_target) + 1) * sizeof(char));
+    strcpy(real_target, root_target);
+    strcat(real_target, args->target);
+
+    DIR* dir = opendir(real_target);
+    if(dir) closedir(dir);
+    else {
+        if(mkdir(real_target, 0755) < 0){
+            fprintf(stderr, "mkdir %s failed: %s", real_target, strerror(errno));
+            return -1;
+        }
+    }
+
+    if(mount(args->source, real_target, NULL, MS_BIND, NULL) < 0){
+        fprintf(stderr, "Mount %s on %s failed: %s\n", args->source, real_target, strerror(errno));
+        free(real_target);
+        return -1;
+    }
+    free(real_target);
+    return 0;
+}
+
+int mount_newfs(struct mount_args* args, const char* root_target){
 
     char* real_target = malloc((strlen(args->target) + strlen(root_target) + 1) * sizeof(char));
     strcpy(real_target, root_target);
@@ -163,7 +187,7 @@ int mount_newfs(struct newfs_args* args, const char* root_target){
     DIR* dir = opendir(real_target);
     if(dir) closedir(dir);
     else{
-        if (mkdir(real_target, args->mode) < 0){
+        if (mkdir(real_target, 0700) < 0){
             fprintf(stderr, "mkdir %s failed: %s\n", real_target, strerror(errno));
             return -1;
         }
@@ -176,29 +200,7 @@ int mount_newfs(struct newfs_args* args, const char* root_target){
     return 0;
 }
 
-int config_uts_ns(pid_t ppid){
-    return sethname(ppid);
-}
-
-int config_mount_ns(const char* container_root){
-
-    // if(mount_newfs("tmp", "/tmp", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=1777", 01777) < 0) return -1;
-    // if(mount_newfs("run", "/run", "tmpfs", container_root, MS_NODEV | MS_NOSUID, "mode=755", 0755) < 0) return -1;
-    // if(mount_newfs("dev", "/dev", "tmpfs", container_root, MS_NOSUID | MS_STRICTATIME, "mode=755", 0755) < 0) return -1;
-    // if(mount_newfs("sys", "/sys", "sysfs", container_root, MS_NODEV | MS_NOSUID | MS_NOEXEC | MS_RDONLY, NULL, 0555) < 0) return -1;
-    // if(mount_newfs("devpts", "/dev/pts", "devpts", container_root, MS_NOSUID | MS_NOEXEC, "newinstance,mode=0620,ptmxmode=0666", 0755) < 0) return -1;
-    
-    for(int i = 0; i < (int)(sizeof(default_mount_newfs)/sizeof(default_mount_newfs[0])); i++){
-        if(mount_newfs(&(default_mount_newfs[i]), container_root) < 0) return -1;
-    }
-
-    if(mount_bind("/dev/null", "/dev/null", container_root, "file") < 0) return -1;
-    if(mount_bind("/dev/zero", "/dev/zero", container_root, "file") < 0) return -1;
-    if(mount_bind("/dev/full", "/dev/full", container_root, "file") < 0) return -1;
-    if(mount_bind("/dev/random", "/dev/random", container_root, "file") < 0) return -1;
-    if(mount_bind("/dev/urandom", "/dev/urandom", container_root, "file") < 0) return -1;
-    if(mount_bind("/dev/tty", "/dev/tty", container_root, "file") < 0) return -1;
-
+int pivot_root_wrapper(const char*  container_root){
     if(chdir(container_root) < 0){
         fprintf(stderr, "chdir to new root failed: %s\n", strerror(errno));
         return -1;
@@ -214,10 +216,28 @@ int config_mount_ns(const char* container_root){
         return -1;
     }
 
-    if(symlink_wrapper("/proc/self/fd", "/dev/fd") < 0) return -1;
-    if(symlink_wrapper("/proc/self/fd/0", "/dev/stdin") < 0) return -1;
-    if(symlink_wrapper("/proc/self/fd/1", "/dev/stdout") < 0) return -1;
-    if(symlink_wrapper("/proc/self/fd/2", "/dev/stderr") < 0) return -1;
+    return 0;
+}
+
+int config_uts_ns(pid_t ppid){
+    return sethname(ppid);
+}
+
+int config_mount_ns(const char* container_root){
+    
+    for(int i = 0; i < (int)(sizeof(default_mount_newfs)/sizeof(default_mount_newfs[0])); i++){
+        if(mount_newfs(&(default_mount_newfs[i]), container_root) < 0) return -1;
+    }
+
+    for(int i = 0; i < (int)(sizeof(default_mount_bind)/sizeof(default_mount_bind[0])); i++){
+        if(mount_bind_file(&(default_mount_bind[i]), container_root) < 0) return -1;
+    }
+
+    if(pivot_root_wrapper(container_root) < 0) return -1;
+
+    for(int i = 0; i < (int)(sizeof(default_symlink)/sizeof(default_symlink[0])); i++){
+        if(symlink_wrapper(default_symlink[i][0], default_symlink[i][1]) < 0) return -1;
+    }
 
     return 0;
 }
@@ -260,7 +280,7 @@ int init_root(const char* container_root){
         return -1;
     }
 
-    return mount_bind(container_root, container_root, "", "dir");
+    return mount_bind_dir(&((struct mount_args){container_root, container_root, NULL, MS_BIND, NULL}), "");
 }
 
 int fchild(void* arg){
@@ -292,7 +312,11 @@ void truckerpid(pid_t chpid, pid_t ppid){
     free(pidc);
 }
 
-int deliver(const char* container_root, const char* container_prog, char* container_argv[], struct options** opts){
+int deliver(const char* container_root, 
+            const char* container_prog, 
+            char* container_argv[], 
+            struct options** opts){
+                
     int status;
     container_prog = "/bin/sh";
     container_root = "/home/ibrahimbdj/trucker/conteneur-root";
