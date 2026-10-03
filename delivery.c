@@ -507,13 +507,16 @@ int deliver_launcher(const char* container_root,
                         if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
                         return -1;
 
+                        char* trucker_path = secure_getenv("TRUCKER");
+                        char* cfg_net_ns_sh = concat_path("/config_net_ns.sh", trucker_path);
+
                         char* argv[3];
-                        argv[0] = "config_net_ns.sh";
+                        argv[0] = cfg_net_ns_sh;
                         argv[1] = read_pipe_buf;
                         argv[2] = NULL;
 
-                        execve("/home/ibrahimbdj/trucker/config_net_ns.sh", argv, NULL);
-                        fprintf(stderr, "execve failed\n");
+                        execve(cfg_net_ns_sh, argv, NULL);
+                        fprintf(stderr, "execve failed: %s\n", strerror(errno));
                         return -1;
                     } 
                     
