@@ -19,10 +19,10 @@
 
 #define ARRAY_SIZE(a) ((int)(sizeof(a)/sizeof(a[0])))
 
-struct chargs {
+struct child_args {
     pid_t ppid;
-    uid_t rluid;
-    gid_t rlgid;
+    uid_t real_uid;
+    gid_t real_gid;
     const char* root;
     const char* prog;
     char** argv;
@@ -34,6 +34,17 @@ struct mount_args {
     const char* filesystemtype;
     unsigned long mountflags;
     const void* data;
+};
+
+struct symlink_args {
+    const char* target;
+    const char* linkpath;
+};
+
+struct sync_pipes {
+    int net_go[2];
+    int net_back[2];
+    int getcldpid_pipe[2];
 };
 
 static struct mount_args default_mount_newfs[] = {
@@ -66,13 +77,58 @@ static struct mount_args default_mount_bind[] = {
     {"/dev/tty", "/dev/tty", NULL, MS_BIND, NULL}
 };
 
-static char* default_symlink[][2] = {
+static struct symlink_args default_symlink[] = {
     {"/proc/self/fd", "/dev/fd"},
     {"/proc/self/fd/0", "/dev/stdin"},
     {"/proc/self/fd/1", "/dev/stdout"},
     {"/proc/self/fd/2", "/dev/stderr"},
     {"/dev/pts/ptmx", "/dev/ptmx"}
 };
+
+static struct sync_pipes cfgpipes;
+
+
+static int close_pipe(int pipefd[]){
+
+    if(close(pipefd[0]) < 0){
+        fprintf(stderr, "close pipefd[0]  failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if(close(pipefd[1]) < 0){
+        fprintf(stderr, "close pipefd[1]  failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+static void* malloc_wrapper(size_t malloc_size){
+    void* ptr = malloc(malloc_size);
+
+    if(ptr == NULL){
+        fprintf(stderr, "malloc failed: %s\n", strerror(errno));
+        return NULL;
+    }
+
+    return ptr;
+}
+
+static int write_wrapper(int fd, const char* buf, size_t count){
+    if(write(fd, buf, count) < 0){
+        fprintf(stderr, "Write to pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int read_wrapper(int fd, void* buf, size_t count){
+    if(read(fd, buf, count) < 0){
+        fprintf(stderr, "Read from pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
 
 static int fn_id_map(unsigned int id, char* type){
 
@@ -116,7 +172,7 @@ static char* hostname_gen(pid_t pid){
     return hostname;
 }
 
-static int sethname(pid_t pid){
+static int sethostname_rand(pid_t pid){
     char* hostname = hostname_gen(pid);
     if(hostname == NULL) return -1;
 
@@ -129,22 +185,26 @@ static int sethname(pid_t pid){
     return 0;
 }
 
-static int symlink_wrapper(const char* target, const char* link_path, const char* root_path){
-    char* real_link_path = malloc((strlen(link_path) + strlen(root_path) + 1) * sizeof(char));
-    strcpy(real_link_path, root_path);
-    strcat(real_link_path, link_path);
+static char* concat_path(const char* path, const char* root_path){
+    char* new_path = malloc((strlen(path) + strlen(root_path) + 1) * sizeof(char));
+    strcpy(new_path, root_path);
+    strcat(new_path, path);
 
-    if(symlink(target , real_link_path) < 0){
-        fprintf(stderr, "symlink %s -> %s failed: %s\n", link_path, target, strerror(errno));
+    return new_path;
+}
+
+static int symlink_wrapper(struct symlink_args* args, const char* root_path){
+    char* real_link_path = concat_path(args->linkpath, root_path);
+
+    if(symlink(args->target , real_link_path) < 0){
+        fprintf(stderr, "symlink %s -> %s failed: %s\n", args->linkpath, args->target, strerror(errno));
         return -1;
     }
     return 0;
 }
 
 static int mount_bind_file(struct mount_args* args, const char* root_path){
-    char* real_target = malloc((strlen(args->target) + strlen(root_path) + 1) * sizeof(char));
-    strcpy(real_target, root_path);
-    strcat(real_target, args->target);
+    char* real_target = concat_path(args->target, root_path);
 
     FILE* f = fopen(real_target, "w");
     if(f) fclose(f);
@@ -163,9 +223,7 @@ static int mount_bind_file(struct mount_args* args, const char* root_path){
 }
 
 static int mount_bind_dir(struct mount_args* args, const char* root_path){
-    char* real_target = malloc((strlen(args->target) + strlen(root_path) + 1) * sizeof(char));
-    strcpy(real_target, root_path);
-    strcat(real_target, args->target);
+    char* real_target = concat_path(args->target, root_path);
 
     DIR* dir = opendir(real_target);
     if(dir) closedir(dir);
@@ -187,9 +245,7 @@ static int mount_bind_dir(struct mount_args* args, const char* root_path){
 
 static int mount_newfs(struct mount_args* args, const char* root_path){
 
-    char* real_target = malloc((strlen(args->target) + strlen(root_path) + 1) * sizeof(char));
-    strcpy(real_target, root_path);
-    strcat(real_target, args->target);
+    char* real_target = concat_path(args->target, root_path);
 
     DIR* dir = opendir(real_target);
     if(dir) closedir(dir);
@@ -218,7 +274,17 @@ static int for_mount(  int mount_type_fn(struct mount_args* args, const char* ro
     return 0;
 }
 
+static int init_root(const char* container_root){
+    if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0){
+        fprintf(stderr, "Mount ns propagation change failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return mount_bind_dir(&((struct mount_args){container_root, container_root, NULL, MS_BIND, NULL}), "");
+}
+
 static int pivot_root_wrapper(const char*  container_root){
+
     if(chdir(container_root) < 0){
         fprintf(stderr, "chdir to new root failed: %s\n", strerror(errno));
         return -1;
@@ -238,7 +304,7 @@ static int pivot_root_wrapper(const char*  container_root){
 }
 
 static int config_uts_ns(pid_t ppid){
-    return sethname(ppid);
+    return sethostname_rand(ppid);
 }
 
 static int config_mount_ns(const char* container_root){
@@ -256,7 +322,7 @@ static int config_mount_ns(const char* container_root){
         return -1;
 
     for(int i = 0; i < ARRAY_SIZE(default_symlink); i++){
-        if(symlink_wrapper(default_symlink[i][0], default_symlink[i][1], container_root) < 0) return -1;
+        if(symlink_wrapper(&(default_symlink[i]), container_root) < 0) return -1;
     }
 
     return 0;
@@ -285,35 +351,40 @@ static int config_user_ns(uid_t uid, gid_t gid){
     return 0;
 }
 
-static int init_root(const char* container_root){
-    if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0){
-        fprintf(stderr, "Mount ns propagation change failed: %s\n", strerror(errno));
-        return -1;
-    }
+static int config_net_ns(int pipefd_go[], int pipefd_back[]){
+    if(write_wrapper(pipefd_go[1], "ok", 3) < 0) return -1;
+    if(close_pipe(pipefd_go) < 0) return -1;
 
-    return mount_bind_dir(&((struct mount_args){container_root, container_root, NULL, MS_BIND, NULL}), "");
+    char read_pipe_buf[3];
+    if(read_wrapper(pipefd_back[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0) 
+    return -1;
+    if(close_pipe(pipefd_back) < 0) 
+    return -1;
+
+    return 0;
 }
 
 static int fn_child(void* arg){
-    struct chargs* charg = arg;
+    struct child_args* child_arg = arg;
 
-    if(config_user_ns(charg->rluid, charg->rlgid) < 0) return -1;
-    if(init_root(charg->root) < 0) return -1;
-    if(config_uts_ns(charg->ppid) < 0) return -1;
-    if(config_mount_ns(charg->root) < 0) return -1;
-    if(config_pid_ns(charg->root) < 0) return -1;
-    if(config_ipc_ns(charg->root) < 0) return -1;
-    if(config_cgroup_ns(charg->root) < 0) return -1;
-    if(pivot_root_wrapper(charg->root) < 0) return -1;
-    
-    execve(charg->prog, charg->argv, NULL);
+    if(config_user_ns(child_arg->real_uid, child_arg->real_gid) < 0) return -1;
+    if(init_root(child_arg->root) < 0) return -1;
+    if(config_uts_ns(child_arg->ppid) < 0) return -1;
+    if(config_mount_ns(child_arg->root) < 0) return -1;
+    if(config_pid_ns(child_arg->root) < 0) return -1;
+    if(config_ipc_ns(child_arg->root) < 0) return -1;
+    if(config_cgroup_ns(child_arg->root) < 0) return -1;
+    if(pivot_root_wrapper(child_arg->root) < 0) return -1;
+    if(config_net_ns(cfgpipes.net_go, cfgpipes.net_back) < 0) return -1;
+
+    execve(child_arg->prog, child_arg->argv, NULL);
     fprintf(stderr, "execve failed: %s\n", strerror(errno));
     return -1;
 }
 
-static void truckerpid(pid_t chpid, pid_t ppid){
+static void truckerpid(pid_t child_pid, pid_t ppid){
     char* pidc = malloc(20*sizeof(char));
-    sprintf(pidc, "%d\n%d\n", chpid, ppid);
+    sprintf(pidc, "%d\n%d\n", child_pid, ppid);
     FILE* pidlist = fopen("pidlist", "a");
     fwrite(pidc, 1, strlen(pidc), pidlist);
     fclose(pidlist);
@@ -322,53 +393,60 @@ static void truckerpid(pid_t chpid, pid_t ppid){
 
 int deliver(const char* container_root, 
             const char* container_prog, 
-            char* container_argv[], 
-            struct options** opts){
+            char* container_argv[]/*,
+            struct options** opts*/){
                 
     int status;
-    container_prog = "/bin/sh";
-    container_root = "/home/ibrahimbdj/trucker/conteneur-root";
-    
     size_t stacksize = (1024*1024);
-    char* stack = malloc(1024*1024);
 
-    if(stack == NULL){
-        fprintf(stderr, "malloc child stack failed: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
+    char* stack = malloc_wrapper(stacksize*sizeof(char));
+    if(stack == NULL) exit(EXIT_FAILURE);
 
-    struct chargs* charg = malloc(sizeof(struct chargs));
-    charg->ppid = getpid();
-    charg->rluid = getuid();
-    charg->rlgid = getgid();
-    charg->root = container_root;
-    charg->prog = container_prog;
-    charg->argv = container_argv;
+    struct child_args* child_arg = malloc_wrapper(sizeof(struct child_args));
+    if(child_arg == NULL) exit(EXIT_FAILURE);
+
+    child_arg->ppid = getpid();
+    child_arg->real_uid = getuid();
+    child_arg->real_gid = getgid();
+    child_arg->root = container_root;
+    child_arg->prog = container_prog;
+    child_arg->argv = container_argv;
 
     if(unshare(CLONE_NEWUSER | CLONE_NEWTIME) < 0){
         fprintf(stderr, "unshare time ns failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     
-    pid_t chpid = clone(&fn_child, stack+stacksize,
+    pid_t child_pid = clone(&fn_child, stack+stacksize,
         CLONE_NEWUTS |
         CLONE_NEWIPC |
         CLONE_NEWCGROUP |
         CLONE_NEWNS |
         CLONE_NEWPID |
         CLONE_NEWNET |
-        SIGCHLD, charg);
+        SIGCHLD, child_arg);
 
-    if(chpid < 0){
+    if(child_pid < 0){
         fprintf(stderr, "clone failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     };
 
-    truckerpid(chpid, charg->ppid);
-    printf("child pid: %d\n", chpid);
+    char* str_child_pid = malloc(12*sizeof(char));
+    sprintf(str_child_pid, "%d", child_pid);
 
-    int wait_ret = waitpid(chpid, &status, 0);
-    if( wait_ret < 0) {
+    if(write_wrapper(cfgpipes.getcldpid_pipe[1], str_child_pid, strlen(str_child_pid)+1) < 0) 
+    return -1;
+
+    if(close_pipe(cfgpipes.getcldpid_pipe) < 0) return -1;
+    if(close_pipe(cfgpipes.net_go) < 0) return -1;
+    if(close_pipe(cfgpipes.net_back) < 0) return -1;
+
+    free(str_child_pid);
+
+    truckerpid(child_pid, child_arg->ppid);
+    //printf("child pid: %d\n", child_pid);
+
+    if(waitpid(child_pid, &status, 0) < 0) {
         fprintf(stderr, "waitpid failed\n");
         exit(EXIT_FAILURE);
     }
@@ -376,14 +454,78 @@ int deliver(const char* container_root,
     int ret = 0;
     if(WIFEXITED(status)){
         ret =  WEXITSTATUS(status);
-        printf("child exit status: %d\n", ret);
+        //printf("child exit status: %d\n", ret);
     }else if(WIFSIGNALED(status)){
         ret =  128 + WTERMSIG(status);
-        printf("child end on signal: %d (%s)\n", WTERMSIG(status), strsignal(WTERMSIG(status)));
+        //printf("child end on signal: %d (%s)\n", WTERMSIG(status), strsignal(WTERMSIG(status)));
     }
 
-    //return à refaire
+    //return au dessus à bien refaire
     //nettoyage ressource à faire
 
     return ret;
 }
+
+int deliver_launcher(const char* container_root, 
+            const char* container_prog, 
+            char* container_argv[]/*, 
+            struct options** opts*/){
+
+                pipe(cfgpipes.net_go);
+                pipe(cfgpipes.net_back);
+                pipe(cfgpipes.getcldpid_pipe);
+                
+                pid_t deliver_pid = fork();
+
+                if(deliver_pid < 0){
+                    fprintf(stderr, "fork failed: %s\n", strerror(errno));
+                    return -1;
+                } else if(deliver_pid == 0){
+                    int ret = deliver(container_root, 
+                                    container_prog, 
+                                    container_argv/*, 
+                                    opts,*/);
+                    
+                    if(ret < 0) fprintf(stderr, "Delivery failed\n");
+                    return ret;
+                } else{
+                    int status;
+
+                    char read_pipe_buf[3];
+                    if(read_wrapper(cfgpipes.net_go[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0) return -1;
+                    if(close_pipe(cfgpipes.net_go) < 0) return -1;
+
+                    pid_t pasta_pid = fork();
+
+                    if(pasta_pid < 0){
+                        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+                        return -1;
+                    } 
+
+                    else if(pasta_pid == 0){
+                        char read_pipe_buf[12];
+                        if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
+                        return -1;
+
+                        char* argv[3];
+                        argv[0] = "config_net_ns.sh";
+                        argv[1] = read_pipe_buf;
+                        argv[2] = NULL;
+
+                        execve("/home/ibrahimbdj/trucker/config_net_ns.sh", argv, NULL);
+                        fprintf(stderr, "execve failed\n");
+                        return -1;
+                    } 
+                    
+                    else {
+                        int status;
+                        waitpid(pasta_pid, &status, 0);
+                    }
+
+                    if(write_wrapper(cfgpipes.net_back[1], "ko", 3) < 0) return -1;
+                    if(close_pipe(cfgpipes.net_back) < 0) return -1;
+
+                    waitpid(deliver_pid, &status, 0);
+                    return 0;
+                }
+            }

@@ -1,3 +1,3 @@
 #!/bin/bash
 
-exec systemd-run --user --scope -p Delegate=yes trucker.real "$@"
+exec systemd-run --user --scope --quiet -p Delegate=yes trucker.real "$@"
