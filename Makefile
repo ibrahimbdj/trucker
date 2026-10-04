@@ -1,4 +1,4 @@
-trucker: delivery.c main.c
+trucker.real: delivery.c main.c
 	gcc *.c -Wall -Wextra -o trucker.real
 
 kill:
