@@ -12,7 +12,7 @@ This is an educational container runtime I started to better understand various 
 
 ## ⚠️ Disclaimer
 
-This project is **not intended for production use**. It's a solo learning project, built with my current level of knowledge, and therefore has limitations in features, security and robustness compared to established runtimes such as runc or crun.
+This project is **not intended for production use**. It's a solo learning project, built with my current level of knowledge and therefore has limitations in features, security and robustness compared to established runtimes such as runc or crun.
 
 ## Current state
 
