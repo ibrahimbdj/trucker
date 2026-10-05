@@ -25,7 +25,7 @@ This project is **not intended for production use**. It's a solo learning projec
 
 - **Capabilities**: drop them before running the container's program
 - **Options**: configure the container from the command line, (cgroup, network, ...)
-- **Code cleanup**: the code is not clean yet: memory management, error handling and exit codes are still incomplete
+- **Code cleanup**: the code is not clean yet; memory management, error handling and exit codes are still incomplete
 
 ## Requirements
 
