@@ -20,7 +20,6 @@ This project is **not intended for production use**. It's a solo learning projec
 - All namespaces are set up: user, mount, PID, UTS, IPC, cgroup, network, time
 - Each container runs in its own cgroup (systemd scope)
 - The container has internet access (via `pasta`)
-- Next steps: capabilities and options for more detailed configurations
 
 ## Next steps
 
