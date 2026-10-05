@@ -22,7 +22,11 @@ This project is **not intended for production use**. It's a solo learning projec
 - The container has internet access (via `pasta`)
 - Next steps: capabilities and options for more detailed configurations
 
-The code is not clean yet: memory management and error handling are still incomplete.
+## Next steps
+
+- **Capabilities**: drop them before running the container's program
+- **Options**: configure the container from the command line, (cgroup, network, ...)
+- **Code cleanup**: the code is not clean yet: memory management and error handling are still incomplete
 
 ## Requirements
 
