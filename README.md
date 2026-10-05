@@ -12,12 +12,12 @@ This is an educational container runtime I started to better understand various 
 
 ## ⚠️ Disclaimer
 
-This project is **not intended for production use**. It's a solo learning project, built with my current level of knowledge and it has limitations due to it in terms of features, security and robustness compared to established runtimes such as `runc` or `crun`.
+This project is **not intended for production use**. It's a solo learning project, built with my current level of knowledge, and therefore has limitations in features, security and robustness compared to established runtimes such as runc or crun.
 
 ## Current state
 
 - Runs rootless (no root needed on the host)
-- All namespaces are set up: user, mount, PID, UTS, IPC, cgroup, network, time
+- All namespaces are set up: user, mount, PID, UTS, IPC, cgroup, network, time, (no clock offsets yet).
 - Each container runs in its own cgroup (systemd scope)
 - The container has internet access (via `pasta`)
 
@@ -46,6 +46,17 @@ trucker deliver <environment> <program> [program args...]
 ```
 
 `<environment>` is the directory used as the container's `/`.
+
+### Example with Alpine Linux
+
+```bash
+mkdir rootfs
+curl -O https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/alpine-minirootfs-X.Y.Z-x86_64.tar.gz
+tar -xzf alpine-minirootfs-*.tar.gz -C rootfs
+trucker deliver ./rootfs /bin/sh
+```
+
+Replace `X.Y.Z` with the current version listed on the [Alpine downloads page](https://alpinelinux.org/downloads/).
 
 ## Coming soon
 
