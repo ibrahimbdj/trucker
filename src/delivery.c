@@ -42,8 +42,8 @@ struct symlink_args {
 };
 
 struct sync_pipes {
-    int net_go[2];
-    int net_back[2];
+    int container_go[2];
+    int container_back[2];
     int getcldpid_pipe[2];
     int ret[2];
 };
@@ -88,6 +88,16 @@ static struct symlink_args default_symlink[] = {
 
 static struct sync_pipes cfgpipes;
 
+static char* ok_pipe = "ok";
+
+static size_t size_ok_pipe = 3;
+
+
+static char* get_trucker_path(){
+    static char* trucker_var = "";
+    trucker_var = secure_getenv("TRUCKER");
+    return trucker_var;
+}
 
 static int close_pipe(int pipefd[]){
 
@@ -131,14 +141,17 @@ static int read_wrapper(int fd, void* buf, size_t count){
     return 0;
 }
 
-static int fn_id_map(unsigned int id, char* type){
+static int fn_id_map(unsigned int id, char* type, char* proc_pid_path){
 
-    if(strcmp(type, "uid") != 0 && strcmp(type, "gid") != 0) return -1;
+    if(strcmp(type, "uid") != 0 && strcmp(type, "gid") != 0) {
+        fprintf(stderr, "fn_id_map wrong argument\n");
+        return -1;
+    }
 
     char id_map_path[64];
     char id_map_entry[64];  
 
-    sprintf(id_map_path, "/proc/self/%s_map", type);
+    sprintf(id_map_path, "%s/%s_map", proc_pid_path, type);
     sprintf(id_map_entry, "0 %u 1", id);
 
     FILE* id_map = fopen(id_map_path, "w");
@@ -350,25 +363,107 @@ static int config_cgroup_ns(const char* container_root){
     return for_mount(&mount_newfs, default_cgroup_newfs, ARRAY_SIZE(default_cgroup_newfs), container_root);
 }
 
-static int config_user_ns(uid_t uid, gid_t gid){
-    FILE* setgroups = fopen("/proc/self/setgroups", "w");
-    fwrite("deny", 1, strlen("deny"), setgroups);
-    fclose(setgroups);
+static int config_user_ns(pid_t pid){
 
-    fn_id_map(uid, "uid");
-    fn_id_map(gid, "gid");
+    char* str_pid = malloc(12*sizeof(char));
+    sprintf(str_pid, "%d", pid);
+    char* proc_pid_path = concat_path(str_pid, "/proc/");
+
+    pid_t child_pid = fork();
+
+    if(child_pid < 0){
+        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if(child_pid == 0){
+        char* config_id_map_sh = concat_path("/config_id_map.sh", get_trucker_path());
+
+        char* argv[2];
+        argv[0] = config_id_map_sh;
+        argv[1] = str_pid;
+        argv[2] = NULL;
+
+        if(execve(config_id_map_sh, argv, NULL) < 0){
+            fprintf(stderr, "execve failed: %s\n", strerror(errno));
+            _exit(EXIT_FAILURE);
+        }
+    }
+
+    int status;
+    if(waitpid(child_pid, &status, 0) < 0){
+        fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
+    }
+
+    fn_id_map(getgid(), "gid", proc_pid_path);
 
     return 0;
 }
 
-static int config_net_ns(int pipefd_go[], int pipefd_back[]){
-    if(write_wrapper(pipefd_go[1], "ok", 3) < 0) return -1;
-    if(close_pipe(pipefd_go) < 0) return -1;
+static int config_user_ns_wrapper(){
+    char read_pipe_buf[size_ok_pipe];
 
-    char read_pipe_buf[3];
-    if(read_wrapper(pipefd_back[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0) 
+    if(write_wrapper(cfgpipes.container_go[1], ok_pipe, size_ok_pipe) < 0) return -1;
+    if(read(cfgpipes.container_back[0], read_pipe_buf, size_ok_pipe) < 0)  return -1;
+
+    return 0;
+}
+
+// static int config_user_ns_test(uid_t uid, gid_t gid){
+//     FILE* setgroups = fopen("/proc/self/setgroups", "w");
+//     fwrite("deny", 1, strlen("deny"), setgroups);
+//     fclose(setgroups);
+
+//     fn_id_map(uid, "uid");
+//     fn_id_map(gid, "gid");
+
+//     return 0;
+// }
+
+static int config_net_ns(){
+    pid_t pasta_pid = fork();
+
+    if(pasta_pid < 0){
+        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        return -1;
+    } 
+
+    else if(pasta_pid == 0){
+        char read_pipe_buf[12];
+        if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
+        _exit(EXIT_FAILURE);
+
+        char* cfg_net_ns_sh = concat_path("/config_net_ns.sh", get_trucker_path());
+
+        char* argv[3];
+        argv[0] = cfg_net_ns_sh;
+        argv[1] = read_pipe_buf;
+        argv[2] = NULL;
+
+        execve(cfg_net_ns_sh, argv, NULL);
+        fprintf(stderr, "execve failed: %s\n", strerror(errno));
+        _exit(EXIT_FAILURE);
+    } 
+    
+    else {
+        int pasta_status;
+        if(waitpid(pasta_pid, &pasta_status, 0) < 0){
+            fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int config_net_ns_wrapper(int container_go[], int container_back[]){
+    if(write_wrapper(container_go[1], ok_pipe, size_ok_pipe) < 0) return -1;
+    if(close_pipe(container_go) < 0) return -1;
+
+    char read_pipe_buf[size_ok_pipe];
+    if(read_wrapper(container_back[0], read_pipe_buf, size_ok_pipe) < 0) 
     return -1;
-    if(close_pipe(pipefd_back) < 0) 
+    if(close_pipe(container_back) < 0) 
     return -1;
 
     return 0;
@@ -380,7 +475,8 @@ static int fn_child(void* arg){
     close_pipe(cfgpipes.getcldpid_pipe);
     close_pipe(cfgpipes.ret);
 
-    if(config_user_ns(child_arg->real_uid, child_arg->real_gid) < 0) return -1;
+    if(config_user_ns_wrapper() < 0) return -1;
+    // if(config_user_ns_test(child_arg->real_uid, child_arg->real_gid) < 0) return -1;
     if(init_root(child_arg->root) < 0) return -1;
     if(config_uts_ns(child_arg->ppid) < 0) return -1;
     if(config_mount_ns(child_arg->root) < 0) return -1;
@@ -388,7 +484,7 @@ static int fn_child(void* arg){
     if(config_ipc_ns(child_arg->root) < 0) return -1;
     if(config_cgroup_ns(child_arg->root) < 0) return -1;
     if(pivot_root_wrapper(child_arg->root) < 0) return -1;
-    if(config_net_ns(cfgpipes.net_go, cfgpipes.net_back) < 0) return -1;
+    if(config_net_ns_wrapper(cfgpipes.container_go, cfgpipes.container_back) < 0) return -1;
 
     execve(child_arg->prog, child_arg->argv, NULL);
     fprintf(stderr, "execve failed: %s\n", strerror(errno));
@@ -399,7 +495,7 @@ static int deliver(const char* container_root,
             const char* container_prog, 
             char* container_argv[]/*,
             struct options** opts*/){
-                
+    
     int status;
     size_t stacksize = (1024*1024);
 
@@ -442,8 +538,8 @@ static int deliver(const char* container_root,
     return 125;
 
     if(close_pipe(cfgpipes.getcldpid_pipe) < 0) return 125;
-    if(close_pipe(cfgpipes.net_go) < 0) return 125;
-    if(close_pipe(cfgpipes.net_back) < 0) return 125;
+    if(close_pipe(cfgpipes.container_go) < 0) return 125;
+    if(close_pipe(cfgpipes.container_back) < 0) return 125;
 
     free(str_child_pid);
 
@@ -464,8 +560,8 @@ int deliver_launcher(const char* container_root,
             char* container_argv[]/*, 
             struct options** opts*/){
 
-    pipe(cfgpipes.net_go);
-    pipe(cfgpipes.net_back);
+    pipe(cfgpipes.container_go);
+    pipe(cfgpipes.container_back);
     pipe(cfgpipes.getcldpid_pipe);
     pipe(cfgpipes.ret);
     
@@ -482,52 +578,28 @@ int deliver_launcher(const char* container_root,
                         container_argv/*, 
                         opts,*/);
         
-        if(ret < 0) fprintf(stderr, "Delivery error: It's possible that the container correctly launched\n");
+        if(ret == 125) fprintf(stderr, "Delivery error: It's possible that the container correctly launched\n");
         return ret;
     }
 
-    char read_pipe_buf[3];
-    if(read_wrapper(cfgpipes.net_go[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0) return -1;
-    if(close_pipe(cfgpipes.net_go) < 0) return -1;
+    char read_pipe_buf[size_ok_pipe];
 
-    pid_t pasta_pid = fork();
+    if(read_wrapper(cfgpipes.container_go[0], read_pipe_buf, size_ok_pipe) < 0) return -1;
+    if(config_user_ns(deliver_pid) < 0) return -1;
+    if(write_wrapper(cfgpipes.container_back[1], ok_pipe, size_ok_pipe) < 0) return -1;
 
-    if(pasta_pid < 0){
-        fprintf(stderr, "fork failed: %s\n", strerror(errno));
-        return -1;
-    } 
-
-    else if(pasta_pid == 0){
-        char read_pipe_buf[12];
-        if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
-        _exit(EXIT_FAILURE);
-
-        char* trucker_path = secure_getenv("TRUCKER");
-        char* cfg_net_ns_sh = concat_path("/config_net_ns.sh", trucker_path);
-
-        char* argv[3];
-        argv[0] = cfg_net_ns_sh;
-        argv[1] = read_pipe_buf;
-        argv[2] = NULL;
-
-        execve(cfg_net_ns_sh, argv, NULL);
-        fprintf(stderr, "execve failed: %s\n", strerror(errno));
-        _exit(EXIT_FAILURE);
-    } 
+    if(read_wrapper(cfgpipes.container_go[0], read_pipe_buf, size_ok_pipe) < 0) return -1;
+    if(config_net_ns() < 0) return -1;
+    if(write_wrapper(cfgpipes.container_back[1], ok_pipe, size_ok_pipe) < 0) return -1;
     
-    else {
-        int pasta_status;
-        if(waitpid(pasta_pid, &pasta_status, 0) < 0){
-            fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
-            return -1;
-        }
-    }
-
-    if(write_wrapper(cfgpipes.net_back[1], "ok", 3) < 0) return -1;
-    if(close_pipe(cfgpipes.net_back) < 0) return -1;
+    if(close_pipe(cfgpipes.container_go) < 0) return -1;
+    if(close_pipe(cfgpipes.container_back) < 0) return -1;
 
     int container_status;
-    if(read_wrapper(cfgpipes.ret[0], &container_status, sizeof(container_status)) < 0 || close_pipe(cfgpipes.ret) < 0){
+    if(read_wrapper(cfgpipes.ret[0], &container_status, sizeof(container_status)) < 0){
+        fprintf(stderr, "exit code can't be return\n");
+    }
+    if(close_pipe(cfgpipes.ret) < 0){
         fprintf(stderr, "exit code can't be return\n");
     }
 
@@ -536,5 +608,6 @@ int deliver_launcher(const char* container_root,
         fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
         return -1;
     }
+
     return 0;
 }
