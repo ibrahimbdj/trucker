@@ -377,7 +377,7 @@ static int config_user_ns(pid_t pid){
     }
 
     if(child_pid == 0){
-        char* config_id_map_sh = concat_path("/config_id_map.sh", get_trucker_path());
+        char* config_id_map_sh = concat_path("/setup/config_id_map.sh", get_trucker_path());
 
         char* argv[2];
         argv[0] = config_id_map_sh;
@@ -433,7 +433,7 @@ static int config_net_ns(){
         if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
         _exit(EXIT_FAILURE);
 
-        char* cfg_net_ns_sh = concat_path("/config_net_ns.sh", get_trucker_path());
+        char* cfg_net_ns_sh = concat_path("/setup/config_net_ns.sh", get_trucker_path());
 
         char* argv[3];
         argv[0] = cfg_net_ns_sh;
