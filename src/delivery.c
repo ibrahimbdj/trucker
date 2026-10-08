@@ -6,15 +6,18 @@
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <errno.h>
+#include <grp.h>
+#include <linux/prctl.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <sys/syscall.h>
-#include <time.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <errno.h>
+#include <sys/prctl.h>
 #include "options.h"
 
 #define ARRAY_SIZE(a) ((int)(sizeof(a)/sizeof(a[0])))
@@ -409,17 +412,6 @@ static int config_user_ns_wrapper(){
     return 0;
 }
 
-// static int config_user_ns_test(uid_t uid, gid_t gid){
-//     FILE* setgroups = fopen("/proc/self/setgroups", "w");
-//     fwrite("deny", 1, strlen("deny"), setgroups);
-//     fclose(setgroups);
-
-//     fn_id_map(uid, "uid");
-//     fn_id_map(gid, "gid");
-
-//     return 0;
-// }
-
 static int config_net_ns(){
     pid_t pasta_pid = fork();
 
@@ -434,6 +426,7 @@ static int config_net_ns(){
         _exit(EXIT_FAILURE);
 
         char* cfg_net_ns_sh = concat_path("/setup/config_net_ns.sh", get_trucker_path());
+        if(cfg_net_ns_sh == NULL) _exit(EXIT_FAILURE);
 
         char* argv[3];
         argv[0] = cfg_net_ns_sh;
@@ -472,11 +465,19 @@ static int config_net_ns_wrapper(int container_go[], int container_back[]){
 static int fn_child(void* arg){
     struct child_args* child_arg = arg;
 
-    close_pipe(cfgpipes.getcldpid_pipe);
-    close_pipe(cfgpipes.ret);
-
+    if(close_pipe(cfgpipes.getcldpid_pipe) < 0) return -1;
+    if(close_pipe(cfgpipes.ret) < 0) return -1;
+    
     if(config_user_ns_wrapper() < 0) return -1;
-    // if(config_user_ns_test(child_arg->real_uid, child_arg->real_gid) < 0) return -1;
+
+    if(setresuid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
+    if(setresgid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
+    
+    if(prctl(PR_SET_DUMPABLE, 1L) < 0){
+        fprintf(stderr, "prctl set dumpable failed: %s\n", strerror(errno));
+        return -1;
+    }
+
     if(init_root(child_arg->root) < 0) return -1;
     if(config_uts_ns(child_arg->ppid) < 0) return -1;
     if(config_mount_ns(child_arg->root) < 0) return -1;
@@ -485,6 +486,8 @@ static int fn_child(void* arg){
     if(config_cgroup_ns(child_arg->root) < 0) return -1;
     if(pivot_root_wrapper(child_arg->root) < 0) return -1;
     if(config_net_ns_wrapper(cfgpipes.container_go, cfgpipes.container_back) < 0) return -1;
+
+    if(setgroups(0, NULL) < 0) return -1;
 
     execve(child_arg->prog, child_arg->argv, NULL);
     fprintf(stderr, "execve failed: %s\n", strerror(errno));
@@ -498,7 +501,7 @@ static int deliver(const char* container_root,
     
     int status;
     size_t stacksize = (1024*1024);
-
+                
     char* stack = malloc_wrapper(stacksize*sizeof(char));
     if(stack == NULL) return 125;
 
