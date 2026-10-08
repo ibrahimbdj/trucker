@@ -33,6 +33,7 @@ This project is **not intended for production use**. It's a solo learning projec
 - A systemd user session (`systemd-run --user`)
 - [`pasta`](https://passt.top/) (package `passt`)
 - `gcc` and `make`
+- `newuidmap`/`newgidmap`
 
 ## Usage
 
