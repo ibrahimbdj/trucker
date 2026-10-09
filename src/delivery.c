@@ -18,7 +18,6 @@
 #include <sys/mount.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
-#include "options.h"
 
 #define ARRAY_SIZE(a) ((int)(sizeof(a)/sizeof(a[0])))
 
@@ -141,27 +140,6 @@ static int read_wrapper(int fd, void* buf, size_t count){
         fprintf(stderr, "Read from pipe failed: %s\n", strerror(errno));
         return -1;
     }
-    return 0;
-}
-
-static int fn_id_map(unsigned int id, char* type, char* proc_pid_path){
-
-    if(strcmp(type, "uid") != 0 && strcmp(type, "gid") != 0) {
-        fprintf(stderr, "fn_id_map wrong argument\n");
-        return -1;
-    }
-
-    char id_map_path[64];
-    char id_map_entry[64];  
-
-    sprintf(id_map_path, "%s/%s_map", proc_pid_path, type);
-    sprintf(id_map_entry, "0 %u 1", id);
-
-    FILE* id_map = fopen(id_map_path, "w");
-    
-    fwrite(id_map_entry, 1, strlen(id_map_entry), id_map);
-    fclose(id_map);
-
     return 0;
 }
 
@@ -329,6 +307,18 @@ static int pivot_root_wrapper(const char*  container_root){
     return 0;
 }
 
+// static int setresid(){
+//     if(setresuid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
+//     if(setresgid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
+    
+//     if(prctl(PR_SET_DUMPABLE, 1L) < 0){
+//         fprintf(stderr, "prctl set dumpable failed: %s\n", strerror(errno));
+//         return -1;
+//     }
+
+//     return 0;
+// }
+
 static int config_uts_ns(pid_t ppid){
     return sethostname_rand(ppid);
 }
@@ -370,7 +360,6 @@ static int config_user_ns(pid_t pid){
 
     char* str_pid = malloc(12*sizeof(char));
     sprintf(str_pid, "%d", pid);
-    char* proc_pid_path = concat_path(str_pid, "/proc/");
 
     pid_t child_pid = fork();
 
@@ -381,24 +370,23 @@ static int config_user_ns(pid_t pid){
 
     if(child_pid == 0){
         char* config_id_map_sh = concat_path("/setup/config_id_map.sh", get_trucker_path());
+        if(config_id_map_sh == NULL) _exit(EXIT_FAILURE);
 
-        char* argv[2];
+        char* argv[3];
         argv[0] = config_id_map_sh;
         argv[1] = str_pid;
         argv[2] = NULL;
 
-        if(execve(config_id_map_sh, argv, NULL) < 0){
-            fprintf(stderr, "execve failed: %s\n", strerror(errno));
-            _exit(EXIT_FAILURE);
-        }
+        execve(config_id_map_sh, argv, NULL);
+        fprintf(stderr, "execve failed: %s\n", strerror(errno));
+        _exit(EXIT_FAILURE);
     }
 
     int status;
     if(waitpid(child_pid, &status, 0) < 0){
         fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
+        return -1;
     }
-
-    fn_id_map(getgid(), "gid", proc_pid_path);
 
     return 0;
 }
@@ -432,18 +420,26 @@ static int config_net_ns(){
         argv[0] = cfg_net_ns_sh;
         argv[1] = read_pipe_buf;
         argv[2] = NULL;
+        
+        char* trucker_p = concat_path( get_trucker_path(), "TRUCKER=");
+        if(trucker_p == NULL){
+            fprintf(stderr, "trucker_p alloc failed\n");
+            _exit(EXIT_FAILURE);
+        }
 
-        execve(cfg_net_ns_sh, argv, NULL);
+        char* env[2];
+        env[0] = trucker_p;
+        env[1] = NULL;
+
+        execve(cfg_net_ns_sh, argv, env);
         fprintf(stderr, "execve failed: %s\n", strerror(errno));
         _exit(EXIT_FAILURE);
     } 
-    
-    else {
-        int pasta_status;
-        if(waitpid(pasta_pid, &pasta_status, 0) < 0){
-            fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
-            return -1;
-        }
+
+    int pasta_status;
+    if(waitpid(pasta_pid, &pasta_status, 0) < 0){
+        fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
+        return -1;
     }
 
     return 0;
@@ -469,15 +465,7 @@ static int fn_child(void* arg){
     if(close_pipe(cfgpipes.ret) < 0) return -1;
     
     if(config_user_ns_wrapper() < 0) return -1;
-
-    if(setresuid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
-    if(setresgid(0, 0, 0) < 0) fprintf(stderr, "failed: %s\n", strerror(errno));
-    
-    if(prctl(PR_SET_DUMPABLE, 1L) < 0){
-        fprintf(stderr, "prctl set dumpable failed: %s\n", strerror(errno));
-        return -1;
-    }
-
+    //if(setresid() < 0) return -1;
     if(init_root(child_arg->root) < 0) return -1;
     if(config_uts_ns(child_arg->ppid) < 0) return -1;
     if(config_mount_ns(child_arg->root) < 0) return -1;
@@ -494,10 +482,7 @@ static int fn_child(void* arg){
     _exit(EXIT_FAILURE);
 }
 
-static int deliver(const char* container_root, 
-            const char* container_prog, 
-            char* container_argv[]/*,
-            struct options** opts*/){
+static int deliver(const char* container_root, const char* container_prog, char* container_argv[]){
     
     int status;
     size_t stacksize = (1024*1024);
@@ -558,10 +543,7 @@ static int deliver(const char* container_root,
     return 0;
 }
 
-int deliver_launcher(const char* container_root, 
-            const char* container_prog, 
-            char* container_argv[]/*, 
-            struct options** opts*/){
+int deliver_launcher(const char* container_root, const char* container_prog, char* container_argv[]){
 
     pipe(cfgpipes.container_go);
     pipe(cfgpipes.container_back);
@@ -576,13 +558,11 @@ int deliver_launcher(const char* container_root,
     }
     
     if(deliver_pid == 0){
-        int ret = deliver(container_root, 
-                        container_prog, 
-                        container_argv/*, 
-                        opts,*/);
+        int ret = deliver(container_root, container_prog, container_argv);
         
-        if(ret == 125) fprintf(stderr, "Delivery error: It's possible that the container correctly launched\n");
-        return ret;
+        if(ret == 125) 
+        fprintf(stderr, "Delivery error: It's possible that the container has correctly been launched\n");
+        _exit(ret);
     }
 
     char read_pipe_buf[size_ok_pipe];
