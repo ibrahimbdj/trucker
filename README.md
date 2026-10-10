@@ -94,14 +94,13 @@ Mounts are described in tables and applied by generic functions, with the flags 
 
 ## Known limitations
 
-- **The exit code is always 0**, even when the container fails.
+- **The exit code** are not yet properly handled
 - **The launcher can hang** if the container fails early: pipes lack `O_CLOEXEC` and unused ends are not closed yet.
 - **Memory management and error handling** are incomplete.
 - **No seccomp filter**, no capability reduction inside the container, no masked paths in `/proc` and `/sys`.
 - **No terminal of its own**: the container uses the host's terminal directly.
 - **No overlay**: changes made by a container stay in the environment directory.
 - **PID 1 ignores `SIGTERM`**, so stopping a scope may wait for systemd's timeout.
-- **`config_id_map.sh`** uses `id -u` for the GID line (fine only if UID = GID) and an unanchored `grep`.
 
 ## Future additions planned
 
