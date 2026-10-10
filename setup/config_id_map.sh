@@ -1,7 +1,7 @@
 #!/bin/sh
 
 mysubuid=$(grep $(id -un) /etc/subuid)
-mysubgid=$(grep $(id -un) /etc/subgid)
+mysubgid=$(grep $(id -gn) /etc/subgid)
 
 newuidmap "$1" 0 "$(id -u)" 1 1 $(echo $mysubuid | cut -d":" -f2) $(echo $mysubuid | cut -d":" -f3)
 
