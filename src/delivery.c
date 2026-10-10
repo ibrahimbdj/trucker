@@ -101,17 +101,27 @@ static char* get_trucker_path(){
     return trucker_var;
 }
 
-static int close_pipe(int pipefd[]){
-
+static int close_pipe_read(int pipefd[]){
     if(close(pipefd[0]) < 0){
         fprintf(stderr, "close pipefd[0]  failed: %s\n", strerror(errno));
         return -1;
     }
 
+    return 0;
+}
+
+static int close_pipe_write(int pipefd[]){
     if(close(pipefd[1]) < 0){
         fprintf(stderr, "close pipefd[1]  failed: %s\n", strerror(errno));
         return -1;
     }
+    
+    return 0;
+}
+
+static int close_pipe(int pipefd[]){
+    if(close_pipe_read(pipefd) < 0) return -1;
+    if(close_pipe_write(pipefd) < 0) return -1;
 
     return 0;
 }
@@ -125,6 +135,15 @@ static void* malloc_wrapper(size_t malloc_size){
     }
 
     return ptr;
+}
+
+static int pipe_wrapper(int pipefd[2]){
+    if(pipe(pipefd) < 0){
+        fprintf(stderr, "pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return 0;
 }
 
 static int write_wrapper(int fd, void* buf, size_t count){
@@ -409,9 +428,15 @@ static int config_net_ns(){
     } 
 
     else if(pasta_pid == 0){
+        close_pipe_write(cfgpipes.container_back);
+        close_pipe_read(cfgpipes.container_go);
+        close_pipe_read(cfgpipes.ret);
+
         char read_pipe_buf[12];
         if(read_wrapper(cfgpipes.getcldpid_pipe[0], read_pipe_buf, sizeof(read_pipe_buf)) < 0)
         _exit(EXIT_FAILURE);
+
+        close_pipe_read(cfgpipes.getcldpid_pipe);
 
         char* cfg_net_ns_sh = concat_path("/setup/config_net_ns.sh", get_trucker_path());
         if(cfg_net_ns_sh == NULL) _exit(EXIT_FAILURE);
@@ -436,6 +461,8 @@ static int config_net_ns(){
         _exit(EXIT_FAILURE);
     } 
 
+    close_pipe_read(cfgpipes.getcldpid_pipe);
+
     int pasta_status;
     if(waitpid(pasta_pid, &pasta_status, 0) < 0){
         fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
@@ -447,22 +474,22 @@ static int config_net_ns(){
 
 static int config_net_ns_wrapper(int container_go[], int container_back[]){
     if(write_wrapper(container_go[1], ok_pipe, size_ok_pipe) < 0) return -1;
-    if(close_pipe(container_go) < 0) return -1;
+    close_pipe_write(cfgpipes.container_go);
 
     char read_pipe_buf[size_ok_pipe];
-    if(read_wrapper(container_back[0], read_pipe_buf, size_ok_pipe) < 0) 
-    return -1;
-    if(close_pipe(container_back) < 0) 
-    return -1;
+    if(read_wrapper(container_back[0], read_pipe_buf, size_ok_pipe) < 0) return -1;
+    close_pipe_read(cfgpipes.container_back);
 
     return 0;
 }
 
 static int fn_child(void* arg){
     struct child_args* child_arg = arg;
-
-    if(close_pipe(cfgpipes.getcldpid_pipe) < 0) return -1;
-    if(close_pipe(cfgpipes.ret) < 0) return -1;
+    
+    close_pipe_write(cfgpipes.getcldpid_pipe);
+    close_pipe_write(cfgpipes.ret);
+    close_pipe_read(cfgpipes.container_go);
+    close_pipe_write(cfgpipes.container_back);
     
     if(config_user_ns_wrapper() < 0) return -1;
     //if(setresid() < 0) return -1;
@@ -486,6 +513,9 @@ static int deliver(const char* container_root, const char* container_prog, char*
     
     int status;
     size_t stacksize = (1024*1024);
+
+    close_pipe_read(cfgpipes.getcldpid_pipe);
+    close_pipe_read(cfgpipes.ret);
                 
     char* stack = malloc_wrapper(stacksize*sizeof(char));
     if(stack == NULL) return 125;
@@ -519,15 +549,15 @@ static int deliver(const char* container_root, const char* container_prog, char*
         return 125;
     };
 
+    close_pipe(cfgpipes.container_go);
+    close_pipe(cfgpipes.container_back);
+
     char* str_child_pid = malloc(12*sizeof(char));
     sprintf(str_child_pid, "%d", child_pid);
 
     if(write_wrapper(cfgpipes.getcldpid_pipe[1], str_child_pid, strlen(str_child_pid)+1) < 0) 
     return 125;
-
-    if(close_pipe(cfgpipes.getcldpid_pipe) < 0) return 125;
-    if(close_pipe(cfgpipes.container_go) < 0) return 125;
-    if(close_pipe(cfgpipes.container_back) < 0) return 125;
+    close_pipe_write(cfgpipes.getcldpid_pipe);
 
     free(str_child_pid);
 
@@ -539,16 +569,17 @@ static int deliver(const char* container_root, const char* container_prog, char*
     }
 
     if(write_wrapper(cfgpipes.ret[1], &status, sizeof(status)) < 0) return 125;
+    close_pipe_write(cfgpipes.ret);
 
     return 0;
 }
 
 int deliver_launcher(const char* container_root, const char* container_prog, char* container_argv[]){
 
-    pipe(cfgpipes.container_go);
-    pipe(cfgpipes.container_back);
-    pipe(cfgpipes.getcldpid_pipe);
-    pipe(cfgpipes.ret);
+    if(pipe_wrapper(cfgpipes.container_go) < 0) return -1;
+    if(pipe_wrapper(cfgpipes.container_back) < 0) return -1;
+    if(pipe_wrapper(cfgpipes.getcldpid_pipe) < 0) return -1;
+    if(pipe_wrapper(cfgpipes.ret) < 0) return -1;
     
     pid_t deliver_pid = fork();
 
@@ -565,6 +596,11 @@ int deliver_launcher(const char* container_root, const char* container_prog, cha
         _exit(ret);
     }
 
+    close_pipe_write(cfgpipes.container_go);
+    close_pipe_read(cfgpipes.container_back);
+    close_pipe_write(cfgpipes.ret);
+    close_pipe_write(cfgpipes.getcldpid_pipe);
+
     char read_pipe_buf[size_ok_pipe];
 
     if(read_wrapper(cfgpipes.container_go[0], read_pipe_buf, size_ok_pipe) < 0) return -1;
@@ -575,16 +611,14 @@ int deliver_launcher(const char* container_root, const char* container_prog, cha
     if(config_net_ns() < 0) return -1;
     if(write_wrapper(cfgpipes.container_back[1], ok_pipe, size_ok_pipe) < 0) return -1;
     
-    if(close_pipe(cfgpipes.container_go) < 0) return -1;
-    if(close_pipe(cfgpipes.container_back) < 0) return -1;
+    close_pipe_read(cfgpipes.container_go);
+    close_pipe_write(cfgpipes.container_back);
 
     int container_status;
     if(read_wrapper(cfgpipes.ret[0], &container_status, sizeof(container_status)) < 0){
         fprintf(stderr, "exit code can't be return\n");
     }
-    if(close_pipe(cfgpipes.ret) < 0){
-        fprintf(stderr, "exit code can't be return\n");
-    }
+    close_pipe_read(cfgpipes.ret);
 
     int deliver_status;
     if(waitpid(deliver_pid, &deliver_status, 0) < 0){
