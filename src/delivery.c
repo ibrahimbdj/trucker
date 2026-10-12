@@ -137,8 +137,8 @@ static void* malloc_wrapper(size_t malloc_size){
     return ptr;
 }
 
-static int pipe_wrapper(int pipefd[2]){
-    if(pipe(pipefd) < 0){
+static int pipe2_wrapper(int pipefd[2], int flags){
+    if(pipe2(pipefd, flags) < 0){
         fprintf(stderr, "pipe failed: %s\n", strerror(errno));
         return -1;
     }
@@ -155,7 +155,7 @@ static int write_wrapper(int fd, void* buf, size_t count){
 }
 
 static int read_wrapper(int fd, void* buf, size_t count){
-    if(read(fd, buf, count) < 0){
+    if(read(fd, buf, count) <= 0){
         fprintf(stderr, "Read from pipe failed: %s\n", strerror(errno));
         return -1;
     }
@@ -217,14 +217,14 @@ static int symlink_wrapper(struct symlink_args* args, const char* root_path){
     return 0;
 }
 
-static void truckerpid(pid_t child_pid, pid_t ppid){
-    char* pidc = malloc(20*sizeof(char));
-    sprintf(pidc, "%d\n%d\n", child_pid, ppid);
-    FILE* pidlist = fopen("pidlist", "a");
-    fwrite(pidc, 1, strlen(pidc), pidlist);
-    fclose(pidlist);
-    free(pidc);
-}
+// static void truckerpid(pid_t child_pid, pid_t ppid){
+//     char* pidc = malloc(20*sizeof(char));
+//     sprintf(pidc, "%d\n%d\n", child_pid, ppid);
+//     FILE* pidlist = fopen("pidlist", "a");
+//     fwrite(pidc, 1, strlen(pidc), pidlist);
+//     fclose(pidlist);
+//     free(pidc);
+// }
 
 static int mount_bind_file(struct mount_args* args, const char* root_path){
     char* real_target = concat_path(args->target, root_path);
@@ -561,7 +561,7 @@ static int deliver(const char* container_root, const char* container_prog, char*
 
     free(str_child_pid);
 
-    truckerpid(child_pid, child_arg->ppid);
+    // truckerpid(child_pid, child_arg->ppid);
 
     if(waitpid(child_pid, &status, 0) < 0) {
         fprintf(stderr, "waitpid failed: %s\n", strerror(errno));
@@ -576,10 +576,10 @@ static int deliver(const char* container_root, const char* container_prog, char*
 
 int deliver_launcher(const char* container_root, const char* container_prog, char* container_argv[]){
 
-    if(pipe_wrapper(cfgpipes.container_go) < 0) return -1;
-    if(pipe_wrapper(cfgpipes.container_back) < 0) return -1;
-    if(pipe_wrapper(cfgpipes.getcldpid_pipe) < 0) return -1;
-    if(pipe_wrapper(cfgpipes.ret) < 0) return -1;
+    if(pipe2_wrapper(cfgpipes.container_go, O_CLOEXEC) < 0) return -1;
+    if(pipe2_wrapper(cfgpipes.container_back, O_CLOEXEC) < 0) return -1;
+    if(pipe2_wrapper(cfgpipes.getcldpid_pipe, O_CLOEXEC) < 0) return -1;
+    if(pipe2_wrapper(cfgpipes.ret, O_CLOEXEC) < 0) return -1;
     
     pid_t deliver_pid = fork();
 
