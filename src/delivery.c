@@ -155,10 +155,17 @@ static int write_wrapper(int fd, void* buf, size_t count){
 }
 
 static int read_wrapper(int fd, void* buf, size_t count){
-    if(read(fd, buf, count) <= 0){
+    int ret = read(fd, buf, count);
+    if(ret < 0){
         fprintf(stderr, "Read from pipe failed: %s\n", strerror(errno));
         return -1;
+    } 
+    
+    if(ret == 0) {
+        fprintf(stderr, "The pipe other side has been closed\n");
+        return -1;
     }
+
     return 0;
 }
 
