@@ -36,22 +36,6 @@ trucker deliver <environment> <program> [args...]
 
 `<environment>` is a directory that becomes the container's `/`, and `<program>` a path inside it.
 
-**Example with Alpine Linux** (replace `X.Y.Z` with the version from the [downloads page](https://alpinelinux.org/downloads/)):
-
-```bash
-mkdir ../alpine-root
-curl -O https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/alpine-minirootfs-X.Y.Z-x86_64.tar.gz
-tar -xzf alpine-minirootfs-*.tar.gz -C ../alpine-root
-trucker deliver ../alpine-root /bin/sh
-```
-
-**Stopping a container**: `exit` its program, or stop its scope from the host:
-
-```bash
-systemctl --user list-units --type=scope
-systemctl --user stop run-xxxx.scope
-```
-
 ## How it works
 
 Three processes are needed, because the UID/GID mapping and the network must be configured from **outside** the container's user namespace:
