@@ -2,9 +2,9 @@
 
 > Rootless Linux container runtime in C: the trucker who delivers containers to the dockers.
 
-*In the interest of transparency: this README was written with the help of Claude, Anthropic's AI assistant. The code is my own, there is no code from any AI system in the project; Claude was used as a learning aid.*
+*In the interest of transparency: this README was written with the help of Claude. The code is my own, there is no code from any AI system in the project; Claude was used as a learning aid.*
 
-> ⚠️ **Educational project, not for production use.** Trucker is a solo learning project built to understand namespaces, cgroups and capabilities by implementing them. It has limitations in features, security and robustness compared to [runc](https://github.com/opencontainers/runc) or [crun](https://github.com/containers/crun).
+> ⚠️ **Educational project, not for production use.** Trucker is a solo learning project built to understand namespaces, cgroups and capabilities by implementing them. It has limitations in features, security and robustness.
 
 ## Features
 
@@ -64,16 +64,16 @@ sequenceDiagram
 ```
 
 - **The launcher** stays in the host's namespaces, so it can run `newuidmap`, `newgidmap` and `pasta` on the container.
-- **The intermediate** creates the user namespace, then the container. The `unshare()` then `clone()` pattern is also what the time namespace requires.
-- **The container** makes its mounts private, mounts everything inside the future root, calls `pivot_root(".", ".")`, detaches the old root, and runs the program.
+- **The intermediate** creates the user namespace, then the container.
+- **The container** makes its mounts private, mounts everything inside the future root, calls `pivot_root(".", ".")`, detaches the old root and execve to run the program.
 
 Mounts are described in tables and applied by generic functions, with the flags used by runc. The devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) are bind-mounted from the host, since `mknod()` is forbidden in a user namespace.
 
 ## Design choices
 
 - **A runtime, not a manager.** Like runc and crun, Trucker takes a directory and runs a program in it. Images, environment variables and the user inside the container belong to the layer above. The runtime only provides what comes from the kernel (`/proc`, `/sys`, `/dev`...).
-- **Capabilities stay inside the container.** The container keeps all capabilities in its own user namespace and has none on the host: capabilities never apply to an ancestor namespace. Reducing them inside is a planned hardening step.
-- **systemd scopes, not PID files.** A process can change PID by daemonizing, but cannot leave its cgroup. Stopping the scope stops the whole container.
+- **Capabilities stay inside the container.** The container keeps all capabilities in its own user namespace and has none on the host.
+- **systemd scope** One scope per container for cgroup configurations. Stopping the scope stops the whole container.
 - **External setup scripts.** The network (`setup/config_net_ns.sh`) and the ID mapping (`setup/config_id_map.sh`) can be adapted without touching the runtime.
 
 ## Known limitations
@@ -96,7 +96,7 @@ Mounts are described in tables and applied by generic functions, with the flags 
 
 ## References
 
-- `man 7` pages: `namespaces`, `user_namespaces`, `mount_namespaces`, `capabilities`, `cgroups`
+- `man` pages: `namespaces`, `user_namespaces`, `mount_namespaces`, `capabilities`, `cgroups`
 - [OCI runtime specification](https://github.com/opencontainers/runtime-spec)
 - [Linux containers in 500 lines of code](https://blog.lizzie.io/linux-containers-in-500-loc.html), by Lizzie Dixon
-- [crun](https://github.com/containers/crun), [runc](https://github.com/opencontainers/runc), [passt / pasta](https://passt.top/)
+- `Claude ai` as learning aid, (not coding)
