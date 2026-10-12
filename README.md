@@ -65,7 +65,7 @@ sequenceDiagram
 
 - **The launcher** stays in the host's namespaces, so it can run `newuidmap`, `newgidmap` and `pasta` on the container.
 - **The intermediate** creates the user namespace, then the container.
-- **The container** makes its mounts private, mounts everything inside the future root, calls `pivot_root(".", ".")`, detaches the old root and execve to run the program.
+- **The container** makes its mounts private, mounts everything inside the future root, calls `pivot_root(".", ".")`, detaches the old root and execve() to run the program.
 
 Mounts are described in tables and applied by generic functions, with the flags used by runc. The devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) are bind-mounted from the host, since `mknod()` is forbidden in a user namespace.
 
@@ -78,8 +78,7 @@ Mounts are described in tables and applied by generic functions, with the flags 
 
 ## Known limitations
 
-- **The exit code** are not yet properly handled
-- **The launcher can hang** if the container fails early: pipes lack `O_CLOEXEC` and unused ends are not closed yet.
+- **Exit codes** are not yet properly handled
 - **Memory management and error handling** are incomplete.
 - **No seccomp filter**, no capability reduction inside the container, no masked paths in `/proc` and `/sys`.
 - **No terminal of its own**: the container uses the host's terminal directly.
