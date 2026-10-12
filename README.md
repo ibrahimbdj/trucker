@@ -95,7 +95,7 @@ Mounts are described in tables and applied by generic functions, with the flags 
 
 ## References
 
-- various `man` pages
+- Various `man` pages
 - [OCI runtime specification](https://github.com/opencontainers/runtime-spec)
 - [Linux containers in 500 lines of code](https://blog.lizzie.io/linux-containers-in-500-loc.html), by Lizzie Dixon
 - `Claude ai` as learning aid, (not coding)
